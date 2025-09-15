@@ -9,21 +9,47 @@
       padding: 0;
       overflow: hidden;
       background: black;
+      color: white;
+      font-family: sans-serif;
     }
-    canvas {
+    #chalkboard {
       display: block;
       background: black;
       cursor: crosshair;
     }
+    #ui {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    button {
+      background: #222;
+      color: white;
+      border: 1px solid #555;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #444;
+    }
   </style>
 </head>
 <body>
+<div id="ui">
+  <button id="clearBtn">Clear Board</button>
+  <span id="online">Online: 0</span>
+</div>
 <canvas id="chalkboard"></canvas>
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js";
   import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js";
-  import { getDatabase, ref, push, onChildAdded } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-database.js";
+  import { getDatabase, ref, push, onChildAdded, onValue, set, remove, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-database.js";
 
   // Your Firebase config
   const firebaseConfig = {
@@ -42,7 +68,7 @@
   const auth = getAuth(app);
   const db = getDatabase(app);
 
-  // Anonymous auth
+  // Sign in anonymously
   signInAnonymously(auth).catch(err => console.error("Auth error:", err));
 
   // Canvas setup
@@ -61,36 +87,58 @@
   ctx.lineWidth = 3;
   ctx.lineCap = "round";
 
-  // Mouse position helper
-  function getMousePos(evt) {
+  // Mouse/touch position helper
+  function getPos(evt) {
     const rect = canvas.getBoundingClientRect();
-    return {
-      x: (evt.clientX - rect.left) * (canvas.width / rect.width),
-      y: (evt.clientY - rect.top) * (canvas.height / rect.height)
-    };
+    if (evt.touches && evt.touches[0]) {
+      return {
+        x: (evt.touches[0].clientX - rect.left) * (canvas.width / rect.width),
+        y: (evt.touches[0].clientY - rect.top) * (canvas.height / rect.height)
+      };
+    } else {
+      return {
+        x: (evt.clientX - rect.left) * (canvas.width / rect.width),
+        y: (evt.clientY - rect.top) * (canvas.height / rect.height)
+      };
+    }
   }
 
   // Drawing logic
   let drawing = false;
   let lastPos = null;
 
-  canvas.addEventListener("mousedown", e => {
+  function startDraw(e) {
+    e.preventDefault();
     drawing = true;
-    lastPos = getMousePos(e);
-  });
+    lastPos = getPos(e);
+  }
 
-  canvas.addEventListener("mousemove", e => {
+  function moveDraw(e) {
     if (!drawing) return;
-    const pos = getMousePos(e);
+    e.preventDefault();
+    const pos = getPos(e);
     drawLine(lastPos.x, lastPos.y, pos.x, pos.y, color);
     sendStroke(lastPos, pos, color);
     lastPos = pos;
-  });
+  }
 
-  canvas.addEventListener("mouseup", () => {
+  function endDraw(e) {
+    e.preventDefault();
     drawing = false;
     lastPos = null;
-  });
+  }
+
+  // Mouse events
+  canvas.addEventListener("mousedown", startDraw);
+  canvas.addEventListener("mousemove", moveDraw);
+  canvas.addEventListener("mouseup", endDraw);
+  canvas.addEventListener("mouseleave", endDraw);
+
+  // Touch events
+  canvas.addEventListener("touchstart", startDraw, { passive: false });
+  canvas.addEventListener("touchmove", moveDraw, { passive: false });
+  canvas.addEventListener("touchend", endDraw, { passive: false });
+  canvas.addEventListener("touchcancel", endDraw, { passive: false });
 
   // Draw locally
   function drawLine(x1, y1, x2, y2, c) {
@@ -116,6 +164,34 @@
     drawLine(s.x1, s.y1, s.x2, s.y2, s.color);
   });
 
+  // Clear board (shared)
+  const clearBtn = document.getElementById("clearBtn");
+  clearBtn.addEventListener("click", () => {
+    set(ref(db, "strokes"), null); // remove all strokes
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  });
+
+  // Clear local canvas when board is cleared by someone
+  onValue(ref(db, "strokes"), snapshot => {
+    if (!snapshot.exists()) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+  });
+
+  // Track online users
+  const onlineRef = ref(db, "online");
+  const myRef = push(onlineRef);
+
+  set(myRef, { active: true, ts: serverTimestamp() });
+  window.addEventListener("beforeunload", () => {
+    remove(myRef);
+  });
+
+  const onlineSpan = document.getElementById("online");
+  onValue(onlineRef, snapshot => {
+    const val = snapshot.val();
+    onlineSpan.textContent = "Online: " + (val ? Object.keys(val).length : 0);
+  });
 </script>
 </body>
 </html>
