@@ -41,20 +41,15 @@
       <button id="download" class="btn small">Download PNG</button>
     </div>
     <div id="usersList" style="display:flex;flex-direction:column;gap:6px;overflow:auto"></div>
-
-    <div style="margin-top:auto">
-      <div class="meta">Instructions</div>
-      <ul style="padding-left:18px;margin:6px 0 0 0;color:#cfcfcf;font-size:13px">
-        <li>Draw with mouse / touch / stylus</li>
-        <li>Brush size adjustable</li>
-        <li>Strokes are saved only when you lift the pointer</li>
-      </ul>
-    </div>
   </div>
 </div>
 
 <script type="module">
-/* --------- IMPORTANT: Paste YOUR Firebase config below --------- */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
+import { getDatabase, ref, push, onChildAdded, onChildRemoved, onValue, remove, set } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-auth.js";
+
+/* ---- Your Firebase config ---- */
 const firebaseConfig = {
   apiKey: "AIzaSyAeBlNLDMLmMvsfcTF5ZvEOnHdTdLeH9oQ",
   authDomain: "chalkboard-fd511.firebaseapp.com",
@@ -65,12 +60,7 @@ const firebaseConfig = {
   appId: "1:314025498738:web:6c84fd27c512008a048aeb",
   measurementId: "G-9WJ3B7SFRV"
 };
-
-/* -------------------------------------------------------------- */
-
-import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
-import { getDatabase, ref, push, onChildAdded, onChildRemoved, onValue, remove, set } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-auth.js";
+/* ------------------------------- */
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
@@ -93,14 +83,13 @@ let currentStroke = [];
 let brushSize = parseInt(sizeInput.value, 10);
 sizeLabel.textContent = brushSize;
 
-// Palette (good high-contrast colors for chalkboard)
+// Palette
 const PALETTE = [
   '#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4',
   '#46f0f0','#f032e6','#bcf60c','#fabebe','#008080','#e6beff',
   '#9A6324','#fffac8','#800000','#aaffc3'
 ];
 
-// Helpers
 function hashStringToIndex(s, n) {
   let h = 2166136261 >>> 0;
   for (let i=0;i<s.length;i++){
@@ -110,236 +99,124 @@ function hashStringToIndex(s, n) {
   return Math.abs(h) % n;
 }
 
-function setCanvasSize() {
-  const ratio = window.devicePixelRatio || 1;
-  canvas.width = canvas.clientWidth * ratio;
-  canvas.height = canvas.clientHeight * ratio;
-  ctx.scale(ratio, ratio);
-  // redraw all strokes when resizing - we maintain a local cache of strokes
-  redrawAll();
-}
+let strokeCache = {};
 
-// Local cache of strokes to redraw when needed
-let strokeCache = {}; // strokeId -> strokeObject
-
-function drawStrokeObj(stroke, opts = {}) {
+function drawStrokeObj(stroke) {
   const points = stroke.points;
   if (!points || points.length === 0) return;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  ctx.lineWidth = (opts.size || stroke.size || 4);
+  ctx.lineWidth = stroke.size || 4;
   ctx.strokeStyle = stroke.color || '#fff';
   ctx.beginPath();
   ctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) {
-    ctx.lineTo(points[i].x, points[i].y);
-  }
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
   ctx.stroke();
 }
 
 function redrawAll() {
-  // fill background
   ctx.fillStyle = '#111';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // draw cached strokes sorted by time
-  const arr = Object.entries(strokeCache).map(([id, s])=>({id, ...s}));
+  const arr = Object.values(strokeCache);
   arr.sort((a,b)=> (a.ts||0)-(b.ts||0));
   for (const s of arr) drawStrokeObj(s);
 }
 
-// Pointer handling
-canvas.addEventListener('pointerdown', (e)=>{
-  canvas.setPointerCapture(e.pointerId);
+// pointer events
+canvas.addEventListener('pointerdown', e=>{
   drawing = true;
   currentStroke = [];
   const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const y = e.clientY - rect.top;
-  currentStroke.push({x,y});
-  // immediate local draw
+  currentStroke.push({x:e.clientX-rect.left,y:e.clientY-rect.top});
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.lineWidth = brushSize;
   ctx.strokeStyle = myColor;
   ctx.beginPath();
-  ctx.moveTo(x,y);
+  ctx.moveTo(e.clientX-rect.left, e.clientY-rect.top);
 });
-
-canvas.addEventListener('pointermove', (e)=>{
+canvas.addEventListener('pointermove', e=>{
   if (!drawing) return;
   const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const y = e.clientY - rect.top;
+  const x = e.clientX-rect.left, y = e.clientY-rect.top;
   currentStroke.push({x,y});
   ctx.lineTo(x,y);
   ctx.stroke();
 });
-
-function pushStrokeToDB(strokeObj) {
-  // strokeObj: {uid, color, size, points, ts}
-  const strokesRef = ref(db, 'strokes');
-  push(strokesRef, strokeObj).catch(err=>console.error('push error',err));
-}
-
-canvas.addEventListener('pointerup', (e)=>{
+canvas.addEventListener('pointerup', ()=>{
   if (!drawing) return;
   drawing = false;
-  canvas.releasePointerCapture(e.pointerId);
   if (currentStroke.length === 0) return;
-  const strokeObj = {
-    uid,
-    color: myColor,
-    size: brushSize,
-    points: currentStroke,
-    ts: Date.now()
-  };
-  // Save to local cache with a temporary random id for immediate redraw (will be replaced by DB id)
-  // but we wait for DB child_added to populate proper id. For now just redraw is enough.
-  pushStrokeToDB(strokeObj);
+  const strokeObj = { uid, color: myColor, size: brushSize, points: currentStroke, ts: Date.now() };
+  push(ref(db, 'strokes'), strokeObj);
   currentStroke = [];
 });
 
-// brush size control
-sizeInput.addEventListener('input', (e)=>{
+sizeInput.addEventListener('input', e=>{
   brushSize = parseInt(e.target.value,10);
   sizeLabel.textContent = brushSize;
 });
-
-// Download image
 downloadBtn.addEventListener('click', ()=>{
-  // create a PNG from canvas (scale for device pixel ratio)
   const link = document.createElement('a');
   link.download = 'chalkboard.png';
-  // To get full resolution, create temporary canvas at devicePixelRatio times
   link.href = canvas.toDataURL('image/png');
   link.click();
 });
-
-// Clear
-clearBtn.addEventListener('click', async ()=>{
-  if (!confirm('Clear the board for everyone? This cannot be undone.')) return;
-  try {
-    await remove(ref(db, 'strokes'));
-  } catch (err) {
-    console.error(err);
-    alert('Failed to clear board: ' + err.message);
-  }
+clearBtn.addEventListener('click', ()=>{
+  if (confirm("Clear for everyone?")) remove(ref(db, 'strokes'));
 });
 
-// Realtime DB listeners
+// db listeners
 function startRealtimeListeners() {
   const strokesRef = ref(db, 'strokes');
-  onChildAdded(strokesRef, (snap)=>{
-    const id = snap.key;
-    const stroke = snap.val();
-    // store locally and draw
-    strokeCache[id] = stroke;
-    drawStrokeObj(stroke);
+  onChildAdded(strokesRef, snap=>{
+    strokeCache[snap.key] = snap.val();
+    drawStrokeObj(snap.val());
   });
-  onChildRemoved(strokesRef, (snap)=>{
-    // When entire strokes node removed, Firebase triggers child_removed for each child; but if removed via remove(strokes),
-    // we can detect empty and clear cache.
-    // Simpler: when strokes node becomes null, onValue below handles clearing.
+  onChildRemoved(strokesRef, snap=>{
     delete strokeCache[snap.key];
     redrawAll();
   });
-  // Also watch entire strokes node to detect full clear (null)
-  onValue(strokesRef, (snap)=>{
-    if (!snap.exists()) {
-      strokeCache = {};
-      redrawAll();
-    }
+  onValue(strokesRef, snap=>{
+    if (!snap.exists()) { strokeCache={}; redrawAll(); }
   });
 }
 
-// Presence: write to /users/<uid> with color and timestamp, remove on disconnect
+// presence
 function setPresence() {
   const userRef = ref(db, `users/${uid}`);
-  set(userRef, { color: myColor, ts: Date.now() }).catch(console.error);
-  // simple onDisconnect cleanup
-  const rt = db; // getDatabase already set; but onDisconnect requires ref from database API - using set + remove on window unload
-  window.addEventListener('beforeunload', async ()=>{
-    try { await remove(userRef); } catch(e){}
-  });
-  // Listen to users list
-  const usersRef = ref(db, 'users');
-  onValue(usersRef, (snap)=>{
+  set(userRef, { color: myColor, ts: Date.now() });
+  window.addEventListener('beforeunload', ()=>remove(userRef));
+  onValue(ref(db, 'users'), snap=>{
     const users = snap.val() || {};
     usersList.innerHTML = '';
     for (const [k,u] of Object.entries(users)) {
       const div = document.createElement('div');
       div.className = 'user';
       div.innerHTML = `<div class="dot" style="background:${u.color};border:1px solid #222"></div>
-                       <div style="flex:1"><div style="font-weight:600">${k===uid? 'You': 'User'}</div>
-                       <div style="font-size:12px;color:#bfbfbf">${new Date(u.ts).toLocaleTimeString()}</div></div>`;
+                       <div>${k===uid?'You':'User'}</div>`;
       usersList.appendChild(div);
     }
   });
 }
 
-// Authentication & init
-statusEl.textContent = 'Signing in...';
-signInAnonymously(auth).catch(err=>{
-  statusEl.textContent = 'Auth error: ' + err.message;
-  console.error(err);
-});
-
-onAuthStateChanged(auth, (user)=>{
+// auth
+signInAnonymously(auth);
+onAuthStateChanged(auth, user=>{
   if (user) {
     uid = user.uid;
-    // pick color deterministically
     myColor = PALETTE[hashStringToIndex(uid, PALETTE.length)];
     myColorDot.style.background = myColor;
-    statusEl.textContent = 'Connected (uid: ' + uid.slice(0,6) + ')';
-    // init
-    setCanvasSize();
+    statusEl.textContent = 'Connected';
+    const ratio = window.devicePixelRatio||1;
+    canvas.width = canvas.clientWidth*ratio;
+    canvas.height = canvas.clientHeight*ratio;
+    ctx.setTransform(ratio,0,0,ratio,0,0);
+    redrawAll();
     startRealtimeListeners();
     setPresence();
-    // draw existing snapshots once (onChildAdded will populate)
-  } else {
-    statusEl.textContent = 'Signed out';
   }
 });
-
-// handle resize
-window.addEventListener('resize', () => {
-  // wait briefly to avoid thrash
-  clearTimeout(window._resizeTimeout);
-  window._resizeTimeout = setTimeout(()=> {
-    // Save current image? We rely on strokeCache to redraw.
-    // Reset transform and redraw
-    // Reset canvas scaling by reloading page scaling
-    // Because ctx.scale is cumulative, easiest is to reset transform by recreating canvas size and re-setting ctx scale.
-    // We'll reset transform by clearing context and reset strokeCache drawing.
-    // Reset the canvas element width/height and scale again
-    const ratio = window.devicePixelRatio || 1;
-    // Remove any existing transform by reinitializing ctx transform via setTransform
-    // but better to just rebuild canvas size and call redrawAll
-    // Clear any previous transform by resetting width/height
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    canvas.width = w * ratio;
-    canvas.height = h * ratio;
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    redrawAll();
-  }, 150);
-});
-
-// initial resize setup after assets loaded
-setTimeout(()=> {
-  // ensure canvas has right CSS size to fill the container
-  canvas.style.width = '100%';
-  canvas.style.height = '100%';
-  // call once
-  const ratio = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  canvas.width = w * ratio;
-  canvas.height = h * ratio;
-  ctx.setTransform(ratio,0,0,ratio,0,0);
-  redrawAll();
-}, 30);
-
 </script>
 </body>
 </html>
