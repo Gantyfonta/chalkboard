@@ -1,222 +1,121 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html>
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Realtime Chalkboard</title>
-<style>
-  html,body{height:100%;margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;}
-  .app{display:flex;height:100vh;}
-  .left{flex:1;position:relative;display:flex;flex-direction:column;}
-  canvas{flex:1;background:#111;touch-action:none;cursor:crosshair;}
-  .toolbar{height:64px;display:flex;align-items:center;padding:8px;gap:8px;background:#0b0b0b;color:#eee;}
-  .btn{padding:8px 12px;background:#222;border:1px solid #333;color:#eee;border-radius:6px;cursor:pointer;}
-  .small{font-size:13px;padding:6px 8px}
-  .right{width:260px;background:#0f0f10;color:#fff;padding:12px;box-shadow:-8px 0 24px rgba(0,0,0,0.6);display:flex;flex-direction:column;gap:10px;}
-  .user{display:flex;gap:8px;align-items:center;padding:6px;border-radius:6px;}
-  .dot{width:18px;height:18px;border-radius:50%;}
-  .meta{font-size:13px;color:#cfcfcf}
-  label{font-size:13px;color:#cfcfcf}
-  input[type="range"]{width:120px}
-</style>
+  <meta charset="utf-8">
+  <title>Multiplayer Chalkboard</title>
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: black;
+    }
+    canvas {
+      display: block;
+      background: black;
+      cursor: crosshair;
+    }
+  </style>
 </head>
 <body>
-<div class="app">
-  <div class="left">
-    <div class="toolbar">
-      <button id="clearBtn" class="btn small">Clear board</button>
-      <label class="meta">Brush: <span id="sizeLabel">4</span></label>
-      <input id="size" type="range" min="1" max="40" value="4" />
-      <label class="meta">Your color:</label>
-      <div id="myColor" class="dot" title="your color" style="border:1px solid #333"></div>
-      <div style="flex:1"></div>
-      <div class="meta" id="status">Connecting...</div>
-    </div>
-    <canvas id="board"></canvas>
-  </div>
-
-  <div class="right">
-    <div style="display:flex;justify-content:space-between;align-items:center;">
-      <strong>Connected users</strong>
-      <button id="download" class="btn small">Download PNG</button>
-    </div>
-    <div id="usersList" style="display:flex;flex-direction:column;gap:6px;overflow:auto"></div>
-  </div>
-</div>
+<canvas id="chalkboard"></canvas>
 
 <script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
-import { getDatabase, ref, push, onChildAdded, onChildRemoved, onValue, remove, set } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-auth.js";
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-app.js";
+  import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-auth.js";
+  import { getDatabase, ref, push, onChildAdded } from "https://www.gstatic.com/firebasejs/10.12.3/firebase-database.js";
 
-/* ---- Your Firebase config ---- */
-const firebaseConfig = {
-  apiKey: "AIzaSyAeBlNLDMLmMvsfcTF5ZvEOnHdTdLeH9oQ",
-  authDomain: "chalkboard-fd511.firebaseapp.com",
-  databaseURL: "https://chalkboard-fd511-default-rtdb.firebaseio.com",
-  projectId: "chalkboard-fd511",
-  storageBucket: "chalkboard-fd511.appspot.com",
-  messagingSenderId: "314025498738",
-  appId: "1:314025498738:web:6c84fd27c512008a048aeb",
-  measurementId: "G-9WJ3B7SFRV"
-};
-/* ------------------------------- */
+  // Your Firebase config
+  const firebaseConfig = {
+    apiKey: "AIzaSyAeBlNLDMLmMvsfcTF5ZvEOnHdTdLeH9oQ",
+    authDomain: "chalkboard-fd511.firebaseapp.com",
+    databaseURL: "https://chalkboard-fd511-default-rtdb.firebaseio.com",
+    projectId: "chalkboard-fd511",
+    storageBucket: "chalkboard-fd511.appspot.com",
+    messagingSenderId: "314025498738",
+    appId: "1:314025498738:web:6c84fd27c512008a048aeb",
+    measurementId: "G-9WJ3B7SFRV"
+  };
 
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
-const auth = getAuth(app);
+  // Init Firebase
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getDatabase(app);
 
-const canvas = document.getElementById('board');
-const ctx = canvas.getContext('2d', { alpha: false });
-const sizeInput = document.getElementById('size');
-const sizeLabel = document.getElementById('sizeLabel');
-const myColorDot = document.getElementById('myColor');
-const usersList = document.getElementById('usersList');
-const clearBtn = document.getElementById('clearBtn');
-const statusEl = document.getElementById('status');
-const downloadBtn = document.getElementById('download');
+  // Anonymous auth
+  signInAnonymously(auth).catch(err => console.error("Auth error:", err));
 
-let uid = null;
-let myColor = '#ffffff';
-let drawing = false;
-let currentStroke = [];
-let brushSize = parseInt(sizeInput.value, 10);
-sizeLabel.textContent = brushSize;
+  // Canvas setup
+  const canvas = document.getElementById("chalkboard");
+  const ctx = canvas.getContext("2d");
 
-// Palette
-const PALETTE = [
-  '#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4',
-  '#46f0f0','#f032e6','#bcf60c','#fabebe','#008080','#e6beff',
-  '#9A6324','#fffac8','#800000','#aaffc3'
-];
-
-function hashStringToIndex(s, n) {
-  let h = 2166136261 >>> 0;
-  for (let i=0;i<s.length;i++){
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
   }
-  return Math.abs(h) % n;
-}
+  window.addEventListener("resize", resizeCanvas);
+  resizeCanvas();
 
-let strokeCache = {};
+  // Random color per user
+  const color = `hsl(${Math.floor(Math.random() * 360)}, 100%, 50%)`;
+  ctx.lineWidth = 3;
+  ctx.lineCap = "round";
 
-function drawStrokeObj(stroke) {
-  const points = stroke.points;
-  if (!points || points.length === 0) return;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  ctx.lineWidth = stroke.size || 4;
-  ctx.strokeStyle = stroke.color || '#fff';
-  ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-  ctx.stroke();
-}
-
-function redrawAll() {
-  ctx.fillStyle = '#111';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const arr = Object.values(strokeCache);
-  arr.sort((a,b)=> (a.ts||0)-(b.ts||0));
-  for (const s of arr) drawStrokeObj(s);
-}
-
-// pointer events
-canvas.addEventListener('pointerdown', e=>{
-  drawing = true;
-  currentStroke = [];
-  const rect = canvas.getBoundingClientRect();
-  currentStroke.push({x:e.clientX-rect.left,y:e.clientY-rect.top});
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  ctx.lineWidth = brushSize;
-  ctx.strokeStyle = myColor;
-  ctx.beginPath();
-  ctx.moveTo(e.clientX-rect.left, e.clientY-rect.top);
-});
-canvas.addEventListener('pointermove', e=>{
-  if (!drawing) return;
-  const rect = canvas.getBoundingClientRect();
-  const x = e.clientX-rect.left, y = e.clientY-rect.top;
-  currentStroke.push({x,y});
-  ctx.lineTo(x,y);
-  ctx.stroke();
-});
-canvas.addEventListener('pointerup', ()=>{
-  if (!drawing) return;
-  drawing = false;
-  if (currentStroke.length === 0) return;
-  const strokeObj = { uid, color: myColor, size: brushSize, points: currentStroke, ts: Date.now() };
-  push(ref(db, 'strokes'), strokeObj);
-  currentStroke = [];
-});
-
-sizeInput.addEventListener('input', e=>{
-  brushSize = parseInt(e.target.value,10);
-  sizeLabel.textContent = brushSize;
-});
-downloadBtn.addEventListener('click', ()=>{
-  const link = document.createElement('a');
-  link.download = 'chalkboard.png';
-  link.href = canvas.toDataURL('image/png');
-  link.click();
-});
-clearBtn.addEventListener('click', ()=>{
-  if (confirm("Clear for everyone?")) remove(ref(db, 'strokes'));
-});
-
-// db listeners
-function startRealtimeListeners() {
-  const strokesRef = ref(db, 'strokes');
-  onChildAdded(strokesRef, snap=>{
-    strokeCache[snap.key] = snap.val();
-    drawStrokeObj(snap.val());
-  });
-  onChildRemoved(strokesRef, snap=>{
-    delete strokeCache[snap.key];
-    redrawAll();
-  });
-  onValue(strokesRef, snap=>{
-    if (!snap.exists()) { strokeCache={}; redrawAll(); }
-  });
-}
-
-// presence
-function setPresence() {
-  const userRef = ref(db, `users/${uid}`);
-  set(userRef, { color: myColor, ts: Date.now() });
-  window.addEventListener('beforeunload', ()=>remove(userRef));
-  onValue(ref(db, 'users'), snap=>{
-    const users = snap.val() || {};
-    usersList.innerHTML = '';
-    for (const [k,u] of Object.entries(users)) {
-      const div = document.createElement('div');
-      div.className = 'user';
-      div.innerHTML = `<div class="dot" style="background:${u.color};border:1px solid #222"></div>
-                       <div>${k===uid?'You':'User'}</div>`;
-      usersList.appendChild(div);
-    }
-  });
-}
-
-// auth
-signInAnonymously(auth);
-onAuthStateChanged(auth, user=>{
-  if (user) {
-    uid = user.uid;
-    myColor = PALETTE[hashStringToIndex(uid, PALETTE.length)];
-    myColorDot.style.background = myColor;
-    statusEl.textContent = 'Connected';
-    const ratio = window.devicePixelRatio||1;
-    canvas.width = canvas.clientWidth*ratio;
-    canvas.height = canvas.clientHeight*ratio;
-    ctx.setTransform(ratio,0,0,ratio,0,0);
-    redrawAll();
-    startRealtimeListeners();
-    setPresence();
+  // Mouse position helper
+  function getMousePos(evt) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (evt.clientX - rect.left) * (canvas.width / rect.width),
+      y: (evt.clientY - rect.top) * (canvas.height / rect.height)
+    };
   }
-});
+
+  // Drawing logic
+  let drawing = false;
+  let lastPos = null;
+
+  canvas.addEventListener("mousedown", e => {
+    drawing = true;
+    lastPos = getMousePos(e);
+  });
+
+  canvas.addEventListener("mousemove", e => {
+    if (!drawing) return;
+    const pos = getMousePos(e);
+    drawLine(lastPos.x, lastPos.y, pos.x, pos.y, color);
+    sendStroke(lastPos, pos, color);
+    lastPos = pos;
+  });
+
+  canvas.addEventListener("mouseup", () => {
+    drawing = false;
+    lastPos = null;
+  });
+
+  // Draw locally
+  function drawLine(x1, y1, x2, y2, c) {
+    ctx.strokeStyle = c;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+
+  // Send stroke to Firebase
+  function sendStroke(from, to, c) {
+    push(ref(db, "strokes"), {
+      x1: from.x, y1: from.y,
+      x2: to.x, y2: to.y,
+      color: c
+    }).catch(err => console.error("push error", err));
+  }
+
+  // Listen for new strokes
+  onChildAdded(ref(db, "strokes"), snapshot => {
+    const s = snapshot.val();
+    drawLine(s.x1, s.y1, s.x2, s.y2, s.color);
+  });
+
 </script>
 </body>
 </html>
